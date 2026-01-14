@@ -1,0 +1,63 @@
+# Copilot / AI Agent Instructions for bnbchainlist
+
+Quick summary: this is a Next.js static/site project that lists blockchain networks (BSC & sidechains) and polls RPC endpoints to show height/latency scores. The site is built from JSON data in `utils/chains.json` and `utils/extraRpcs.json`, uses client-side polling (WebSocket & HTTP) via `hooks/useRPCData.js`, and exposes UI hooks to add networks/RPCs.
+
+What to prioritize when making changes
+- Preserve the data-driven approach: authoritative network data lives in `utils/chains.json` and `utils/extraRpcs.json`.
+- Keep getStaticProps in `pages/index.js` as the build-time entry for chain list population and revalidation (revalidate=3600).
+- Maintain the client-side polling behavior in `hooks/useRPCData.js` (5s refetch) and the sorting/trust heuristics in `components/RPCList/index.js`.
+
+Architecture & important files (quick map)
+- pages/
+  - `pages/index.js` — build-time population of chains (getStaticProps) and top-level page composition
+- components/
+  - `components/chain/chain.js` — per-chain UI + calls `addToNetwork` (wallet integration)
+  - `components/RPCList/index.js` — RPC table, sorting, trust scoring, copy/connect actions
+  - `components/header` — top nav and search/testnet toggles
+- hooks/
+  - `hooks/useRPCData.js` — HTTP (axios) and WebSocket pollers, includes `API_KEY` and `wss://` handling
+- utils/
+  - `utils/chains.json` — canonical chain list
+  - `utils/extraRpcs.json` — additional per-chain RPC URLs merged at build-time
+  - `utils/utils.js` — helpers (addToNetwork, formatAddress, fetcher)
+- stores/
+  - `stores/*` — flux dispatcher + zustand hooks for local UI state (search, testnets, chain selection, rpc store), and `accountStore` for wallet events
+- config
+  - `next.config.js` — `assetPrefix` and `generateBuildId` (uses COMMIT_SHA)
+
+Project-specific conventions & gotchas
+- RPC URL conventions
+  - Any RPC string containing `API_KEY` is intentionally ignored by the polling layer (`useRPCData`) and disabled in the UI (see `useRPCData.js` and `components/RPCList/index.js`). Keep this convention if adding placeholder/private endpoints.
+  - WebSocket (wss://) endpoints are polled differently and UI disallows one-click "add network" for wss URLs.
+- Wallet integration
+  - Wallet connect flows are implemented via `stores/accountStore.js` using a Flux `Dispatcher` and `events.EventEmitter` (constants in `stores/constants/constants.js`). Events to know: `TRY_CONNECT_WALLET`, `ACCOUNT_CONFIGURED`, `ACCOUNT_CHANGED`, `ERROR`.
+- Client-only code
+  - Many modules use `window.*` (`window.ethereum`, `window.web3`, `localStorage`) — these should run only on the client. Keep server/client boundaries in mind (getStaticProps is safe server-side, components relying on `window` are client-only).
+- Asset pathing
+  - Uses `assetPrefix` (computed from `next.config.js` / `publicRuntimeConfig`) and `base/env.js`. When testing locally, `assetPrefix` is empty; in production it’s `https://www.bnbchainlist.org/static`.
+- Styling & components
+  - CSS modules are used throughout (`*.module.css`) and Material-UI v4 provides theming via `withTheme`.
+- Data flow specifics
+  - Chains list is computed at build-time in `getStaticProps`. Extra RPCs are merged when present (see `pages/index.js` -> `populateChain`). Runtime RPC health checks are performed by `useRPCData` and displayed by `components/RPCList`.
+
+Developer workflows & commands
+- Start dev server: `npm run dev` (uses `next dev`) — hot reload and client-only debugging
+- Build for production: `npm run build` then `npm run start` (or `npm run export` for static export)
+- To reproduce production asset paths set `NODE_ENV=production` (and `COMMIT_SHA` if you need a deterministic build id)
+
+Debugging tips & suggested checks for PRs
+- RPC / Polling: use `hooks/useRPCData.js` to reproduce failures; HTTP vs WSS behave differently and socket code uses a Promise hack to wait for the first message.
+- Wallet flows: events in `stores/accountStore.js` and `stores/constants/constants.js`. Watch console.time logs around `ethereum.enable` and `eth.getAccounts` when debugging wallet connect times.
+- UI changes: check CSS module classnames and `assetPrefix` for image paths (see `components/chain/chain.js` for icon resolution).
+- Be careful with SSR: avoid calling `window` during server rendering — wrap client-only code with guards like `if (typeof window !== 'undefined')`.
+
+Examples to reference while coding
+- Add/merge extra RPC entries: `pages/index.js` (function `populateChain`) shows how `utils/extraRpcs.json` is merged with `utils/chains.json` at build time.
+- Polling & formatting: `hooks/useRPCData.js` implements 5s polling, HTTP latency via axios interceptors and WSS via WebSocket messages; `formatData` converts block height and latency.
+- Trust scoring/sorting: `components/RPCList/index.js` shows how items are sorted and how `trust` is derived (green/orange/red) and when `disableConnect` is set.
+
+Quick lint/security notes
+- No linter config present; maintainers rely on manual review. Keep an eye out for accidental inclusion of API keys in `utils/extraRpcs.json` or other committed files.
+- Avoid adding secrets to the repo. The codebase already filters `API_KEY` placeholders—use the same pattern if adding other placeholders.
+
+If anything is unclear or you want the file to include more examples (e.g., a PR checklist, suggested tests, or CI steps), say which section and I’ll iterate. ✅
