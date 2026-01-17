@@ -1,51 +1,106 @@
-## Copilot / AI Agent Instructions for bnbchainlist
+## Copilot Instructions for bnbchainlist
 
-Summary
-- Small Next.js static site (SSG) listing BNBChain networks and their RPC endpoints.
-- Authoritative data: `utils/chains.json`. Add or override RPCs with `utils/extraRpcs.json` (merged at build time).
+### Quick Summary
+Next.js static site displaying BNB Chain networks and RPC endpoint health. Data merges [utils/chains.json](utils/chains.json) (base) + [utils/extraRpcs.json](utils/extraRpcs.json) (overrides) at build time. Client continuously polls RPCs every 5s to show latency and block height.
 
-Quick architecture
-- Build (SSG): `pages/index.js` (getStaticProps) runs `populateChain` to merge `extraRpcs`, normalize RPCs with `removeEndingSlash`, and filter placeholder RPCs (e.g., `${INFURA_API_KEY}`).
-- Runtime: client polls RPCs every 5s via `hooks/useRPCData.js` (react-query `useQueries`).
-  - HTTP RPCs: axios POST + interceptors measure latency (`requestStart` → response.latency).
-  - WSS RPCs: `fetchWssChain` uses a one-message pattern (open → send → wait for first message).
+### Architecture Overview
 
-Authoritative edits & examples
-- Edit chain metadata only in `utils/chains.json`.
-- To add RPCs, update `utils/extraRpcs.json` using:
-  ```json
-  { "56": { "rpcs": ["https://my-bsc-node.example"] } }
-  ```
-- Do NOT commit real keys. RPC strings containing `API_KEY` or `${INFURA_API_KEY}` are filtered at build-time and disabled in the UI.
+**Core Stack**: Next.js 12 + React 17 + Material-UI + react-query + Zustand + Web3.js
 
-Key behaviors & gotchas
-- First-request latency: `Row` in `components/RPCList/index.js` calls `refetch()` on first observation to avoid DNS cold-start impacting latency metrics.
-- Trust scoring: color rules (green/orange/red) are implemented in `components/RPCList/index.js` (compare height and latency deltas before changing logic).
-- Special sorting: `nodereal.io` RPCs are grouped as `specialChain` and prioritized.
-- WSS endpoints are polled but blocked from wallet add (`addToNetwork`).
-- Wallet add flow: `utils/utils.js` → `addToNetwork` builds `wallet_addEthereumChain` params (chainId hex) and calls `window.ethereum.request`.
+**Three-Tier Data Flow**:
+1. **Build-time**: [pages/index.js](pages/index.js) `getStaticProps()` merges chains.json + extraRpcs.json, normalizes URLs, filters API key placeholders
+2. **State Layer**: Hybrid stores—Zustand for UI state ([stores/index.js](stores/index.js)), Flux for account events ([stores/accountStore.js](stores/accountStore.js))
+3. **Runtime**: [hooks/useRPCData.js](hooks/useRPCData.js) polls via react-query—HTTP (axios + interceptors) and WebSocket (wss://) RPC queries, measures latency, parses hex block height
 
-Files to inspect for common changes
-- Data/build: `pages/index.js`, `utils/chains.json`, `utils/extraRpcs.json`
-- Polling/latency: `hooks/useRPCData.js` (`fetchWssChain`, axios interceptors)
-- UI/rules: `components/RPCList/index.js`, `components/chain/chain.js`, `components/chains.js`
-- Wallet/account: `stores/accountStore.js`, `utils/utils.js`
-- Build config: `next.config.js`, `base/env.js`, `Dockerfile` (ARG `COMMIT_SHA` → deterministic `assetPrefix`/buildId)
+### Key Integration Points
 
-Build / dev / verify
-- Dev: `npm run dev` (hot reload); expect RPC rows to refresh ~every 5s.
-- Prod build (locally): set `NODE_ENV=production` and `COMMIT_SHA=<sha>` before `npm run build` (or pass `--build-arg COMMIT_SHA=<sha>` to Docker build).
-- Verify changes:
-  - Data edits: update `utils/chains.json`/`extraRpcs.json`, run dev, confirm new RPC appears and follows filters.
-  - Scoring/polling changes: add temporary logs in `hooks/useRPCData.js` to observe latency/timeout behavior.
+**RPC Health Polling** ([hooks/useRPCData.js](hooks/useRPCData.js) lines 10-50):
+- HTTP: `axios.post()` with request/response interceptors to measure latency
+- WebSocket: Custom promise wrapper for latency measurement
+- **Critical**: Skips URLs containing 'API_KEY' string to block secrets
+- **Result format**: `{ url, height (int), latency (ms) }` or `null` on error
+- **Interval**: 5000ms, configured at line 60 `refetchInterval`
 
-PR Guidance
-- Add a short verification note to PRs (how you tested: e.g., "ran dev, confirmed RPC shows and row color is green").
-- Avoid committing secrets and API keys; rely on `extraRpcs` for opt-in node additions.
-- For behavior changes (scoring/sorting/polling), include a manual test plan and unit tests when practical.
+**Wallet Integration** ([utils/utils.js](utils/utils.js) lines 80+):
+- Calls `window.ethereum.request()` with `wallet_addEthereumChain` RPC
+- Expects chainId as hex string, RPC URLs array from component props
+- Error handling via Flux emitter `ERROR` event
 
-If unclear
-- Open an issue and reference the files above; small tests or dev notes can be added.
+**Theme & Status Colors** ([theme/coreTheme.js](theme/coreTheme.js)):
+- Green: Valid block height + low latency
+- Orange: Valid block height + high latency  
+- Red: Failed RPC or null latency
 
----
-(Concise, actionable, and rooted in discoverable files.)
+### Development Workflow
+
+**Dev Server** (hot reload):
+```bash
+npm run dev
+# RPC poll every 5s auto-refreshes
+```
+
+**Production Build**:
+```bash
+NODE_ENV=production COMMIT_SHA=$(git rev-parse HEAD) npm run build
+```
+Sets `next.config.js` → `assetPrefix` to `https://www.bnbchainlist.org/static` for CDN cache busting.
+
+### Project Patterns & Conventions
+
+**Data Structure** ([utils/chains.json](utils/chains.json)):
+```json
+[
+  {
+    "chainId": 56,
+    "name": "BNB Smart Chain Mainnet",
+    "rpc": ["https://bsc.nodereal.io", ...],
+    "nativeCurrency": { "name": "...", "symbol": "BNB", "decimals": 18 },
+    "explorers": [{ "name": "bscscan", "url": "..." }]
+  }
+]
+```
+
+**Override Pattern** ([utils/extraRpcs.json](utils/extraRpcs.json)):
+```json
+{
+  "56": { "rpcs": ["https://custom-rpc.example"] },
+  "97": { "rpcs": [...] }
+}
+```
+Used at build-time merge—extraRpcs values **replace** base chains.json rpcs.
+
+**Secret Filtering** (enforced in 3 places):
+1. [hooks/useRPCData.js](hooks/useRPCData.js) line 14: Skip URLs with 'API_KEY'
+2. Build process: Filter `${INFURA_API_KEY}` placeholders
+3. UI: Disabled state on placeholder RPCs
+
+**Component Hierarchy**:
+- [pages/index.js](pages/index.js): Main page, fetches chains via getStaticProps
+- [components/chains.js](components/chains.js): Maps chains to Card components
+- [components/chain/chain.js](components/chain/chain.js): Expandable card with wallet button
+- [components/RPCList/index.js](components/RPCList/index.js): RPC status rows with copy buttons
+
+### Common Tasks
+
+| Task | Pattern |
+|------|---------|
+| Add RPC to chain | Edit [utils/chains.json](utils/chains.json) → add URL to `rpc` array |
+| Override RPC (no rebuild) | Add to [utils/extraRpcs.json](utils/extraRpcs.json) → merge applied at build |
+| Change poll interval | [hooks/useRPCData.js](hooks/useRPCData.js) line 60: `refetchInterval: 5000` |
+| Add testnet | [utils/chains.json](utils/chains.json) → new object with chainId < 1000 typically |
+| Adjust theme colors | [theme/coreTheme.js](theme/coreTheme.js) → Material-UI palette |
+| Handle RPC errors | [hooks/useRPCData.js](hooks/useRPCData.js) lines 35-40: catch block returns null |
+
+### Testing & Verification
+
+- **Dev smoke test**: `npm run dev` → expand chain → watch RPC rows update within 5s
+- **Build safety**: `npm run build` → grep output for 'API_KEY' or placeholders (should find none)
+- **Wallet flow**: Expand chain → test "Add to wallet" button with MetaMask
+- **Docker build**: `COMMIT_SHA=abc123 docker build -t bnbchainlist:latest .`
+
+### PR Checklist
+- ✅ RPC data updated in chains.json or extraRpcs.json
+- ✅ No API keys committed (lint build output)
+- ✅ Dev server tested: RPCs poll, latency displays
+- ✅ Wallet add flow tested (at least one chain)
+- ✅ Build succeeds: `npm run build`

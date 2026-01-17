@@ -25,10 +25,9 @@ export async function getStaticProps({ params }) {
   // const chainTvls = await fetcher('https://api.llama.fi/chains');
 
   function populateChain(chain) {
-    const extraRpcs = allExtraRpcs[chain.chainId]?.rpcs;
-    if (extraRpcs !== undefined) {
+    if (allExtraRpcs[chain.chainId]?.rpcs !== undefined) {
       const rpcs = new Set(chain.rpc.map(removeEndingSlash).filter((rpc) => !rpc.includes('${INFURA_API_KEY}')));
-      extraRpcs.forEach((rpc) => rpcs.add(removeEndingSlash(rpc)));
+      allExtraRpcs[chain.chainId]?.rpcs.forEach((rpc) => rpcs.add(removeEndingSlash(rpc)));
       chain.rpc = Array.from(rpcs);
     }
     const chainSlug = chainIds[chain.chainId];
